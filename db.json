@@ -1,0 +1,21 @@
+{
+  "users": [
+    {
+      "username": "test",
+      "hash": "$2b$10$YFGp4zt65h6ijZrDNgULeOcxj4plk/Tb.6y7X4vYlIvOEqVdD3uuC",
+      "expiresAt": 1752962600522
+    }
+  ],
+  "tokens": [
+    {
+      "username": "test",
+      "token": "18696d4f-dd83-4436-98de-fff307f39aab",
+      "deviceId": "0a:8e:2b:00:e5:e2"
+    },
+    {
+      "username": "test",
+      "token": "d839332f-835f-4bd1-a7fc-b36d5b8a5d20",
+      "deviceId": "D8:F3:BC:4B:F8:69"
+    }
+  ]
+}

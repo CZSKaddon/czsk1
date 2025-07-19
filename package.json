@@ -1,0 +1,31 @@
+{
+  "name": "stremio-CZSK-addon",
+  "version": "0.0.1",
+  "description": "CZSK.to addon for Stremio",
+  "main": "addon.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "stremio",
+    "addon",
+    "CZSK",
+    "stream",
+    "video"
+  ],
+  "author": "",
+  "license": "GPL-2.0",
+  "dependencies": {
+    "axios": "^0.24.0",
+    "bcrypt": "^6.0.0",
+    "body-parser": "^2.2.0",
+    "express": "^5.1.0",
+    "http-proxy-middleware": "^3.0.5",
+    "lowdb": "^1.0.0",
+    "stremio-addon-sdk": "^1.6.10",
+    "uuid": "^11.1.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
