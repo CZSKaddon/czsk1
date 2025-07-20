@@ -196,35 +196,31 @@ app.post('/login', async (req, res) => {
 // This middleware locks token to both deviceMac and the first User-Agent that uses it
 app.use(MOUNT_PATH, (req, res, next) => {
   const { token, deviceMac } = req.params;
-  if (!MAC_REGEX.test(deviceMac)) {
-    return res.status(400).end('Bad MAC format');
-  }
-
+  // 1) basic token + MAC check
   const entry = db.get('tokens').find({ token, deviceId: deviceMac }).value();
-  if (!entry) {
-    return res.status(401).end('Invalid token/device');
+  if (!entry) return res.status(401).end('Invalid token/device');
+
+  // 2) always allow manifest.json so streams appear in the UI:
+  if (req.path.endsWith('/manifest.json')) {
+    return next();
   }
 
-  // Enforce single‐device by User-Agent
-  const ua = req.headers['user-agent'] || '';
+  // 3) for ANY other route (including /stream), enforce UA lock:
+  const ua = req.headers['user-agent']||'';
   if (!entry.userAgent) {
-    // first use: bind this UA
-    db.get('tokens')
-      .find({ token, deviceId: deviceMac })
-      .assign({ userAgent: ua })
-      .write();
+    // first time: bind to this UA
+    db.get('tokens').find({ token, deviceId: deviceMac }).assign({ userAgent: ua }).write();
   } else if (entry.userAgent !== ua) {
-    return res.status(403).end('This token is already in use on another device');
+    return res.status(403).end('Already in use on another device');
   }
 
-  // Check expiry
+  // 4) expiry check as before
   const usr = db.get('users').find({ username: entry.username }).value();
-  if (Date.now() > usr.expiresAt) {
-    return res.status(403).end('Account expired');
-  }
+  if (Date.now() > usr.expiresAt) return res.status(403).end('Account expired');
 
   next();
 });
+
 app.use(MOUNT_PATH, getRouter(addonInterface));
 
 // —— START SERVER ——
