@@ -3,7 +3,17 @@
     {
       "username": "test",
       "hash": "$2b$10$YFGp4zt65h6ijZrDNgULeOcxj4plk/Tb.6y7X4vYlIvOEqVdD3uuC",
-      "expiresAt": 1752962600522
+      "expiresAt": 1753904147896
+    },
+    {
+      "username": "a",
+      "hash": "$2b$10$EBPzTwCpWBz/onmS3HOjAuhLCqkyY43OyHRSA.tn7c2pe.zJflOfK",
+      "expiresAt": 1753139772145
+    },
+    {
+      "username": "b",
+      "hash": "$2b$10$P4K9ORpJVO1bk9kb8whMKe0AbqLPpm/EeJssbNpbeTZ38ENDII7H2",
+      "expiresAt": 1753172336347
     }
   ],
   "tokens": [
@@ -16,6 +26,23 @@
       "username": "test",
       "token": "d839332f-835f-4bd1-a7fc-b36d5b8a5d20",
       "deviceId": "D8:F3:BC:4B:F8:69"
+    },
+    {
+      "username": "a",
+      "token": "6c59a655-f656-4c1d-920e-70a9e3b3f55c",
+      "deviceId": "0a:8e:2b:00:e5:e0",
+      "userAgent": "PC-UA"
+    },
+    {
+      "username": "a",
+      "token": "18694121-d7ca-4540-817a-41c5495f97d7",
+      "deviceId": "aa:bb:cc:dd:ee:ff",
+      "userAgent": "PC-UA"
+    },
+    {
+      "username": "b",
+      "token": "8e843e66-7441-486e-a898-f60b46dd6e7d",
+      "deviceId": "aa:bb:cc:dd:ee:fe"
     }
   ]
 }
