@@ -2,7 +2,7 @@
   "name": "stremio-CZSK-addon",
   "version": "0.0.1",
   "description": "CZSK.to addon for Stremio",
-  "main": "addon.js",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
@@ -30,3 +30,4 @@
     "node": ">=14.0.0"
   }
 }
+
