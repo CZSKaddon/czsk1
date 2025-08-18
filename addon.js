@@ -11,6 +11,21 @@ const builder = new addonBuilder({
   types: ["movie", "series"],
   idPrefixes: ["tt", "kitsu"],
   catalogs: [],
+  // ++ PŘIDÁNO: Doporučení pro instalaci OpenSubtitles v3 ++
+  behaviorHints: {
+    // Váš addon není konfigurovatelný a neobsahuje obsah pro dospělé
+    configurable: false,
+    adult: false,
+    // Toto pole doporučí Stremio, aby nainstalovalo i další doplňky
+    installations: [
+        {
+            // Odkaz na manifest oficiálního doplňku OpenSubtitles v3
+            manifest: "https://opensubtitles-v3.stremio.org/manifest.json",
+            // Řekneme Stremio, že tento doplněk poskytuje titulky
+            resource: "subtitles"
+        }
+    ]
+  }
 });
 
 const searchCache = new Map();
