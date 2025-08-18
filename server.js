@@ -38,7 +38,7 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
-// ++ UPRAVENO: Schéma pro tokeny s logováním IP a User Agenta ++
+// Schéma pro tokeny/zařízení s logováním
 const TokenSchema = new mongoose.Schema({
   username: { type: String, required: true, index: true },
   token: { type: String, required: true, unique: true },
@@ -48,8 +48,8 @@ const TokenSchema = new mongoose.Schema({
   lastWatchedImdbId: { type: String },
   lastWatchedInfo: { type: String },
   lastWatchedAt: { type: Date },
-  lastIpAddress: { type: String }, // Nové pole pro IP
-  lastUserAgent: { type: String }, // Nové pole pro User Agent
+  lastIpAddress: { type: String },
+  lastUserAgent: { type: String },
 });
 TokenSchema.index({ token: 1, deviceId: 1 });
 const Token = mongoose.models.Token || mongoose.model('Token', TokenSchema);
@@ -97,7 +97,7 @@ app.get('/admin', adminAuth, async (req, res) => {
     const userTokens = tokens.filter(t => t.username === u.username);
     if (userTokens.length === 0) {
         const exp = new Date(u.expiresAt).toLocaleString();
-         rowsHtml += `<tr><td>${u.username}</td><td>${exp}</td><td colspan="6">No devices</td></tr>`; // Zvýšeno colspan
+         rowsHtml += `<tr><td>${u.username}</td><td>${exp}</td><td colspan="7">No devices</td></tr>`;
     } else {
         userTokens.forEach(tkn => {
           const exp = new Date(u.expiresAt).toLocaleString();
@@ -110,7 +110,6 @@ app.get('/admin', adminAuth, async (req, res) => {
             ? new Date(tkn.lastWatchedAt).toLocaleString()
             : 'N/A';
 
-          // ++ UPRAVENO: Zobrazení IP a User Agenta v tabulce ++
           rowsHtml += `
             <tr>
               <td>${u.username}</td>
@@ -217,97 +216,89 @@ app.post('/admin/reset', adminAuth, async (req, res) => {
   res.redirect('/admin');
 });
 
-// —— PUBLIC ENDPOINTS ——
-app.post('/register', async (req, res) => {
-  const { username, password, daysValid } = req.body;
-  if (!username || !password || !daysValid) return res.status(400).json({ error: 'username,password,daysValid required' });
-  if (await User.findOne({ username })) return res.status(409).json({ error: 'User exists' });
+// ++ PŘIDÁNO: Dynamický manifest pro unikátní identitu doplňku ++
+app.get('/:token/:deviceMac/manifest.json', async (req, res) => {
+    const { token, deviceMac } = req.params;
+    if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
 
-  const hash = await bcrypt.hash(password, 10);
-  await User.create({ username, hash, expiresAt: calcExpiry(+daysValid) });
-  res.json({ message: 'Registered!' });
-});
-
-app.post('/login', async (req, res) => {
-  const { username, password, deviceId } = req.body;
-  if (!username || !password || !deviceId) return res.status(400).json({ error: 'username,password,deviceId required' });
-  if (!MAC_REGEX.test(deviceId)) return res.status(400).json({ error: 'Bad MAC format' });
-
-  const user = await User.findOne({ username });
-  if (!user || !(await bcrypt.compare(password, user.hash))) return res.status(401).json({ error: 'Invalid creds' });
-  if (Date.now() > user.expiresAt) return res.status(403).json({ error: 'Account expired' });
-
-  let entry = await Token.findOne({ username, deviceId });
-  let token = entry ? entry.token : uuidv4();
-  if (!entry) {
-    await Token.create({ username, token, deviceId });
-  }
-  res.json({ token });
-});
-
-// —— PROTECT, UA‑LOCK & MOUNT ADDON ——
-app.use(MOUNT_PATH, async (req, res, next) => {
-  const { token, deviceMac } = req.params;
-  if (!MAC_REGEX.test(deviceMac)) return res.status(400).end('Bad MAC format');
-
-  const entry = await Token.findOne({ token, deviceId: deviceMac });
-  if (!entry) return res.status(401).end('Invalid token/device');
-
-  const user = await User.findOne({ username: entry.username });
-  if (!user) return res.status(401).end('User not found');
-  if (Date.now() > user.expiresAt) return res.status(403).end('Account expired');
-
-  if (req.path.startsWith('/stream/')) {
     try {
-      const parts = req.path.split('/');
-      const type = parts[2];
-      const idParts = parts[3].split('.json')[0].split(':');
-      const imdbId = idParts[0];
-      let contentInfo = '';
-      if (type === 'series' && idParts.length > 2) {
-        contentInfo = `S${String(idParts[1]).padStart(2, '0')}E${String(idParts[2]).padStart(2, '0')}`;
-      }
-      
-      // ++ UPRAVENO: Záznam IP a User Agenta ++
-      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-      const ua = req.headers['user-agent'] || '';
+        const entry = await Token.findOne({ token, deviceId: deviceMac });
+        if (!entry) return res.status(401).send('Invalid token/device');
 
-      await Token.updateOne({ _id: entry._id }, {
-        $set: {
-          lastWatchedType: type,
-          lastWatchedImdbId: imdbId,
-          lastWatchedInfo: contentInfo,
-          lastWatchedAt: new Date(),
-          lastIpAddress: ip,
-          lastUserAgent: ua,
-        }
-      });
-      console.log(`Updated last-watched for user ${user.username}: ${imdbId} ${contentInfo}`);
+        const user = await User.findOne({ username: entry.username });
+        if (!user || Date.now() > user.expiresAt) return res.status(403).send('Account expired or not found');
 
+        const manifest = { ...addonInterface.manifest };
+        const cleanMac = deviceMac.replace(/:/g, '');
+        
+        // Vytvoříme unikátní ID a jméno pro tuto konkrétní instalaci
+        manifest.id = `org.stremio.czsk.${user.username}.${cleanMac}`;
+        manifest.name = `CZSK (${user.username})`;
+        manifest.description = `Personalized CZSK addon for ${user.username} on device ${deviceMac}`;
+
+        res.json(manifest);
     } catch (err) {
-      console.error('Failed to update last-watched event:', err);
+        console.error("Manifest generation error:", err);
+        res.status(500).send('Error generating manifest');
     }
-  }
-
-  if (req.path.endsWith('/manifest.json')) {
-    return next();
-  }
-
-  if (req.method === 'GET' && req.path.match(/\/stream\//)) {
-    const ua = req.headers['user-agent'] || '';
-    if (!entry.userAgent) {
-      await Token.updateOne({ _id: entry._id }, { userAgent: ua });
-    } else if (entry.userAgent !== ua) {
-      return res.json({ streams: [{
-        name: "🔒 Error",
-        title: 'This account is already in use on another device.',
-        url: 'https://via.placeholder.com/1280x720/000000/FFFFFF?text=Error:%20Device%20lock'
-      }]});
-    }
-  }
-
-  next();
 });
-app.use(MOUNT_PATH, getRouter(addonInterface));
+
+// ++ UPRAVENO: Middleware pro ochranu, logování a směrování streamů ++
+const addonRouter = getRouter(addonInterface);
+app.use(MOUNT_PATH, async (req, res, next) => {
+    // Tento middleware přeskočíme pro manifest, protože ten má vlastní cestu výše
+    if (req.path.endsWith('/manifest.json')) {
+        return next();
+    }
+
+    try {
+        const { token, deviceMac } = req.params;
+
+        const entry = await Token.findOne({ token, deviceId: deviceMac });
+        if (!entry) return res.status(401).send('Invalid token/device');
+
+        const user = await User.findOne({ username: entry.username });
+        if (!user || Date.now() > user.expiresAt) return res.status(403).send('Account expired or user not found');
+        
+        // Logika pouze pro streamy
+        if (req.path.startsWith('/stream/')) {
+            const parts = req.path.split('/');
+            const type = parts[2];
+            const idParts = parts[3].split('.json')[0].split(':');
+            const imdbId = idParts[0];
+            let contentInfo = '';
+            if (type === 'series' && idParts.length > 2) {
+                contentInfo = `S${String(idParts[1]).padStart(2, '0')}E${String(idParts[2]).padStart(2, '0')}`;
+            }
+            
+            const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+            const ua = req.headers['user-agent'] || '';
+
+            await Token.updateOne({ _id: entry._id }, {
+                $set: { 
+                    lastWatchedType: type, 
+                    lastWatchedImdbId: imdbId, 
+                    lastWatchedInfo: contentInfo, 
+                    lastWatchedAt: new Date(),
+                    lastIpAddress: ip,
+                    lastUserAgent: ua,
+                }
+            });
+            
+            // Logika pro uzamčení zařízení (UA-Lock)
+            if (!entry.userAgent) {
+                await Token.updateOne({ _id: entry._id }, { userAgent: ua });
+            } else if (entry.userAgent !== ua) {
+                return res.json({ streams: [{ name: "🔒 Error", title: 'This account is already in use on another device.', url: 'data:,' }]});
+            }
+        }
+        
+        // Předání požadavku Stremio routeru
+        addonRouter(req, res, next);
+    } catch (err) {
+        console.error("Middleware error:", err);
+        res.status(500).send('Server error');
+    }
+});
 
 module.exports = app;
