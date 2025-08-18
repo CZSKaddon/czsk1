@@ -34,7 +34,6 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
-// ++ SCHEMA WITH IP AND USER-AGENT ADDED ++
 const TokenSchema = new mongoose.Schema({
   username: { type: String, required: true, index: true },
   token: { type: String, required: true, unique: true },
@@ -44,8 +43,8 @@ const TokenSchema = new mongoose.Schema({
   lastWatchedImdbId: { type: String },
   lastWatchedInfo: { type: String },
   lastWatchedAt: { type: Date },
-  lastIpAddress: { type: String }, // For IP logging
-  lastUserAgent: { type: String },// For User-Agent logging
+  lastIpAddress: { type: String },
+  lastUserAgent: { type: String },
 });
 TokenSchema.index({ token: 1, deviceId: 1 });
 const Token = mongoose.models.Token || mongoose.model('Token', TokenSchema);
@@ -67,7 +66,6 @@ app.use(async (req, res, next) => {
 
 // --- Admin Authentication & Functions ---
 function adminAuth(req, res, next) {
-    // ... no changes here ...
     const auth = req.headers.authorization || '';
     if (!auth.startsWith('Basic ')) {
         res.set('WWW-Authenticate', 'Basic realm="Admin Area"');
@@ -107,7 +105,6 @@ app.get('/admin', adminAuth, async (req, res) => {
                     ? new Date(tkn.lastWatchedAt).toLocaleString()
                     : 'N/A';
 
-                // ++ DISPLAY IP AND USER-AGENT IN TABLE ++
                 rowsHtml += `
                     <tr>
                         <td>${u.username}</td>
@@ -141,7 +138,7 @@ app.get('/admin', adminAuth, async (req, res) => {
     res.send(html);
 });
 
-// —— ADMIN ACTIONS —— (No changes here)
+// —— ADMIN ACTIONS ——
 app.post('/admin/register', adminAuth, async (req, res) => {
     const { username, password, daysValid, deviceMac } = req.body;
     if (!username || !password || !daysValid || !deviceMac) return res.status(400).send('All fields required');
@@ -178,76 +175,13 @@ app.post('/admin/reset', adminAuth, async (req, res) => {
 // ++ DYNAMICKÝ MANIFEST TO FIX MULTIPLE-UPDATE BUG ++
 app.get('/:token/:deviceMac/manifest.json', async (req, res) => {
     const { token, deviceMac } = req.params;
+    if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
 
-    // Create a unique name and ID without needing to connect to the database.
-    // This makes the manifest request extremely fast and avoids timeouts.
-    const manifest = { ...addonInterface.manifest };
-    const cleanMac = deviceMac.replace(/:/g, '');
-    
-    manifest.id = `org.stremio.czsk.${token}.${cleanMac}`;
-    manifest.name = `CZSK (${cleanMac.slice(-4)})`; // Unique name using last 4 chars of MAC
-    manifest.description = `Personalized CZSK addon for device ${deviceMac}`;
+    try {
+        const entry = await Token.findOne({ token, deviceId: deviceMac });
+        if (!entry) return res.status(401).send('Invalid token/device');
 
-    res.json(manifest);
-});
-// ++ STREAM ROUTER WITH AUTH, LOGGING, AND UA-LOCK ++
-const addonRouter = getRouter(addonInterface);
-app.use(MOUNT_PATH, async (req, res, next) => {
-    // Skip this middleware for manifest requests, as they are handled above
-    if (req.path.endsWith('/manifest.json')) {
-        return next();
-    }
+        const user = await User.findOne({ username: entry.username });
+        if (!user || Date.now() > user.expiresAt) return res.status(403).send('Account expired or not found');
 
-    const { token, deviceMac } = req.params;
-
-    const entry = await Token.findOne({ token, deviceId: deviceMac });
-    if (!entry) return res.status(401).send('Invalid token/device');
-
-    const user = await User.findOne({ username: entry.username });
-    if (!user || Date.now() > user.expiresAt) return res.status(403).send('Account expired or user not found');
-    
-    // Logic only for stream requests
-    if (req.path.startsWith('/stream/')) {
-        try {
-            const parts = req.path.split('/');
-            const type = parts[2];
-            const idParts = parts[3].split('.json')[0].split(':');
-            const imdbId = idParts[0];
-            let contentInfo = '';
-            if (type === 'series' && idParts.length > 2) {
-                contentInfo = `S${String(idParts[1]).padStart(2, '0')}E${String(idParts[2]).padStart(2, '0')}`;
-            }
-            
-            const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-            const ua = req.headers['user-agent'] || '';
-
-            await Token.updateOne({ _id: entry._id }, {
-                $set: { 
-                    lastWatchedType: type, 
-                    lastWatchedImdbId: imdbId, 
-                    lastWatchedInfo: contentInfo, 
-                    lastWatchedAt: new Date(),
-                    lastIpAddress: ip,
-                    lastUserAgent: ua, // This is the new field for logging
-                }
-            });
-            console.log(`Updated last-watched for user ${user.username} from IP ${ip}`);
-            
-            // UA-Lock Logic
-            if (!entry.userAgent) {
-                await Token.updateOne({ _id: entry._id }, { userAgent: ua });
-            } else if (entry.userAgent !== ua) {
-                return res.json({ streams: [{ name: "🔒 Error", title: 'This account is already in use on another device.', url: 'data:,' }]});
-            }
-
-        } catch (err) {
-            console.error('Failed to update last-watched event:', err);
-        }
-    }
-    
-    // Pass the request to the Stremio addon router
-    addonRouter(req, res, next);
-});
-
-module.exports = app;
-
+        const manifest = { ...addonInterface.manifest
