@@ -49,3 +49,4 @@ This addon allows you to search and stream content from CZSK.to directly in Stre
 ## License
 
 This project is licensed under the GNU General Public License v2.0 - see the [LICENSE](LICENSE) file for details.
+Test update to trigger redeploy.
