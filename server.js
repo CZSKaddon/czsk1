@@ -88,14 +88,14 @@ app.get('/admin', adminAuth, async (req, res) => {
   const users = await User.find().lean();
   const tokens = await Token.find().lean();
   const host = req.headers['x-forwarded-host'] || req.headers.host;
-  const protocol = req.headers['x-forwarded-proto'] || 'https';
+  const protocol = req.headers['x-forwarded-proto'] || 'https'
 
   let rowsHtml = '';
   users.forEach(u => {
     const userTokens = tokens.filter(t => t.username === u.username);
     if (userTokens.length === 0) {
         const exp = new Date(u.expiresAt).toLocaleString();
-         rowsHtml += `<tr><td>${u.username}</td><td>${exp}</td><td colspan="4">No devices</td>
+         rowsHtml += `<tr><td>${u.username}</td><td>${exp}</td><td colspan="5">No devices</td>
          <td>
             <form style="display:inline" method="POST" action="/admin/reset">
                <input type="hidden" name="username"  value="${u.username}">
@@ -123,6 +123,7 @@ app.get('/admin', adminAuth, async (req, res) => {
               <td><a href="https://www.imdb.com/title/${tkn.lastWatchedImdbId || ''}" target="_blank">${lastWatchedText}</a></td>
               <td>${lastWatchedTime}</td>
               <td><a href="${url}" target="_blank">Install URL</a></td>
+              <td>${tkn.token.substring(0, 8)}...</td> 
               <td>
                  <form style="display:inline" method="POST" action="/admin/revoke">
                    <input type="hidden" name="username" value="${u.username}">
@@ -141,7 +142,7 @@ app.get('/admin', adminAuth, async (req, res) => {
   });
 
   const html = `
-    <!DOCTYPE html><html><head><meta charset="utf-8"><title>Admin Dashboard</title><style>body{font-family:sans-serif;max-width:1100px;margin:auto;} table{width:100%; border-collapse: collapse;} th,td{border:1px solid #ccc; padding: 8px; text-align:left;} form{margin-bottom:2em;}</style></head>
+    <!DOCTYPE html><html><head><meta charset="utf-8"><title>Admin Dashboard</title><style>body{font-family:sans-serif;max-width:1200px;margin:auto;} table{width:100%; border-collapse: collapse;} th,td{border:1px solid #ccc; padding: 8px; text-align:left;} form{margin-bottom:2em;}</style></head>
     <body>
       <h1>Admin Dashboard</h1>
       <h2>Register New User</h2>
@@ -167,6 +168,7 @@ app.get('/admin', adminAuth, async (req, res) => {
             <th>Last Watched</th>
             <th>Time</th>
             <th>Install Link</th>
+            <th>Token ID</th>
             <th>Actions</th>
         </tr>
         ${rowsHtml}
@@ -305,3 +307,4 @@ app.use(MOUNT_PATH, async (req, res, next) => {
 app.use(MOUNT_PATH, getRouter(addonInterface));
 
 module.exports = app;
+
