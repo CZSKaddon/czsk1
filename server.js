@@ -176,20 +176,15 @@ app.post('/admin/reset', adminAuth, async (req, res) => {
 // ++ DYNAMICKÝ MANIFEST PRO UNIKÁTNÍ IDENTITU DOPLŇKU ++
 app.get('/:token/:deviceMac/manifest.json', async (req, res) => {
     const { token, deviceMac } = req.params;
-    if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
 
-    const entry = await Token.findOne({ token, deviceId: deviceMac });
-    if (!entry) return res.status(401).send('Invalid token/device');
-
-    const user = await User.findOne({ username: entry.username });
-    if (!user || Date.now() > user.expiresAt) return res.status(403).send('Account expired or not found');
-
+    // Create a unique name and ID without needing to connect to the database.
+    // This makes the manifest request extremely fast and avoids timeouts.
     const manifest = { ...addonInterface.manifest };
     const cleanMac = deviceMac.replace(/:/g, '');
     
-    manifest.id = `org.stremio.czsk.${user.username}.${cleanMac}`;
-    manifest.name = `CZSK (${user.username})`;
-    manifest.description = `Personalized CZSK addon for ${user.username} on device ${deviceMac}`;
+    manifest.id = `org.stremio.czsk.${token}.${cleanMac}`;
+    manifest.name = `CZSK (${cleanMac.slice(-4)})`; // Unique name using last 4 chars of MAC
+    manifest.description = `Personalized CZSK addon for device ${deviceMac}`;
 
     res.json(manifest);
 });
@@ -245,3 +240,4 @@ app.use(MOUNT_PATH, async (req, res, next) => {
 });
 
 module.exports = app;
+
