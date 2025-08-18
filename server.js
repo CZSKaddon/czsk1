@@ -1,24 +1,17 @@
 #!/usr/bin/env node
 
 const express = require('express');
-const bodyParser = require('body-parser');
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('./addon');
-const bcrypt = require('bcrypt');
-const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
 
-// —— CONFIG ——
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.ADMIN_PASS || 'secret';
 const MOUNT_PATH = '/:token/:deviceMac';
 const MAC_REGEX = /^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$/i;
 
-// ++ MONGOOSE DATABASE SETUP ++
 const MONGODB_URI = process.env.MONGODB_URI;
 let conn = null;
 
-const connectDB = async () => {
+async function connectDB() {
   if (conn == null) {
     conn = mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 5000 }).then(() => mongoose);
     await conn;
@@ -26,218 +19,65 @@ const connectDB = async () => {
   return conn;
 };
 
-// --- Schemas (User, Token) ---
 const UserSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true, index: true },
-  hash: { type: String, required: true },
+  username: { type: String, required: true, unique: true },
   expiresAt: { type: Date, required: true },
 });
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
 const TokenSchema = new mongoose.Schema({
-  username: { type: String, required: true, index: true },
+  username: { type: String, required: true },
   token: { type: String, required: true, unique: true },
   deviceId: { type: String, required: true },
-  lastUserAgent: { type: String },
-  lastWatchedType: { type: String },
-  lastWatchedImdbId: { type: String },
-  lastWatchedInfo: { type: String },
-  lastWatchedAt: { type: Date },
-  lastIpAddress: { type: String },
 });
 TokenSchema.index({ token: 1, deviceId: 1 });
 const Token = mongoose.models.Token || mongoose.model('Token', TokenSchema);
 
-
-// —— EXPRESS SETUP ——
 const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
 
+// Middleware to handle database connection first
 app.use(async (req, res, next) => {
   try {
     await connectDB();
     next();
   } catch (error) {
-    console.error('Database connection error:', error);
-    res.status(500).send('Could not connect to the database.');
+    console.error('Database connection failed:', error);
+    return res.status(500).send('Database connection failed.');
   }
 });
 
-// --- Admin Authentication ---
-function adminAuth(req, res, next) {
-  const auth = req.headers.authorization || '';
-  if (!auth.startsWith('Basic ')) {
-    res.set('WWW-Authenticate', 'Basic realm="Admin Area"');
-    return res.status(401).send('Auth required');
-  }
-  const [u, p] = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
-  if (u === ADMIN_USER && p === ADMIN_PASS) return next();
-  res.set('WWW-Authenticate', 'Basic realm="Admin Area"');
-  return res.status(401).send('Invalid credentials');
-}
-
-function calcExpiry(days) {
-  return Date.now() + days * 24 * 60 * 60 * 1000;
-}
-
-// —— ADMIN DASHBOARD ——
-app.get('/admin', adminAuth, async (req, res) => {
-    // This code remains the same
-    const users = await User.find().lean();
-    const tokens = await Token.find().lean();
-    const host = req.headers['x-forwarded-host'] || req.headers.host;
-    const protocol = req.headers['x-forwarded-proto'] || 'https';
-
-    let rowsHtml = '';
-    users.forEach(u => {
-        const userTokens = tokens.filter(t => t.username === u.username);
-        if (userTokens.length === 0) {
-            const exp = new Date(u.expiresAt).toLocaleString();
-            rowsHtml += `<tr><td>${u.username}</td><td>${exp}</td><td colspan="7">No devices</td></tr>`;
-        } else {
-            userTokens.forEach(tkn => {
-                const exp = new Date(u.expiresAt).toLocaleString();
-                const url = `${protocol}://${host}/${tkn.token}/${tkn.deviceId}/manifest.json`;
-
-                const lastWatchedText = tkn.lastWatchedAt 
-                    ? `${tkn.lastWatchedImdbId} ${tkn.lastWatchedInfo || ''}`.trim()
-                    : 'N/A';
-                const lastWatchedTime = tkn.lastWatchedAt
-                    ? new Date(tkn.lastWatchedAt).toLocaleString()
-                    : 'N/A';
-
-                rowsHtml += `
-                    <tr>
-                        <td>${u.username}</td>
-                        <td>${exp}</td>
-                        <td>${tkn.deviceId}</td>
-                        <td><a href="https://www.imdb.com/title/${tkn.lastWatchedImdbId || ''}" target="_blank">${lastWatchedText}</a></td>
-                        <td>${lastWatchedTime}</td>
-                        <td>${tkn.lastIpAddress || 'N/A'}</td>
-                        <td title="${tkn.lastUserAgent || ''}">${(tkn.lastUserAgent || 'N/A').substring(0, 20)}...</td>
-                        <td><a href="${url}" target="_blank">Install URL</a></td>
-                        <td>
-                            <form style="display:inline" method="POST" action="/admin/revoke"><input type="hidden" name="username" value="${u.username}"><input type="hidden" name="deviceMac" value="${tkn.deviceId}"><button>Revoke</button></form>
-                            <form style="display:inline" method="POST" action="/admin/reset"><input type="hidden" name="username" value="${u.username}"><input type="number" name="daysValid" min="1" placeholder="Days" required><button>Reset</button></form>
-                        </td>
-                    </tr>`;
-            });
-        }
-    });
-
-    const html = `
-    <!DOCTYPE html><html><head><meta charset="utf-8"><title>Admin Dashboard</title><style>body{font-family:sans-serif;max-width:1400px;margin:auto;} table{width:100%; border-collapse: collapse;} th,td{border:1px solid #ccc; padding: 8px; text-align:left;} form{margin-bottom:2em;}</style></head>
-    <body>
-      <h1>Admin Dashboard</h1>
-      <h2>Register New User</h2>
-      <form method="POST" action="/admin/register"><label>Username:<br><input name="username" required></label><br><label>Password:<br><input type="password" name="password" required></label><br><label>Device MAC:<br><input name="deviceMac" required placeholder="AA:BB:CC:DD:EE:FF"></label><br><label>Days Valid:<br><input name="daysValid" type="number" min="1" required></label><br><button>Create</button></form>
-      <h2>Add Device to Existing User</h2>
-      <form method="POST" action="/admin/add-device"><label>Username:<br><select name="username">${users.map(u => `<option>${u.username}</option>`).join('')}</select></label><br><label>Device MAC:<br><input name="deviceMac" required placeholder="AA:BB:CC:DD:EE:FF"></label><br><button>Add Device</button></form>
-      <h2>Existing Users & Devices</h2>
-      <table><tr><th>User</th><th>Expires</th><th>Device MAC</th><th>Last Watched</th><th>Time</th><th>Last IP Address</th><th>Device Info (User-Agent)</th><th>Install Link</th><th>Actions</th></tr>${rowsHtml}</table>
-    </body></html>`;
-    res.send(html);
-});
-
-// —— ADMIN ACTIONS —— (No changes in this section)
-app.post('/admin/register', adminAuth, async (req, res) => {
-    const { username, password, daysValid, deviceMac } = req.body;
-    if (!username || !password || !daysValid || !deviceMac) return res.status(400).send('All fields required');
-    if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
-    if (await User.findOne({ username })) return res.status(409).send('User exists');
-    const hash = await bcrypt.hash(password, 10);
-    await User.create({ username, hash, expiresAt: calcExpiry(+daysValid) });
-    const token = uuidv4();
-    await Token.create({ username, token, deviceId: deviceMac });
-    res.redirect('/admin');
-});
-app.post('/admin/add-device', adminAuth, async (req, res) => {
-    const { username, deviceMac } = req.body;
-    if (!username || !deviceMac) return res.status(400).send('Fields required');
-    if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
-    if (!await User.findOne({ username })) return res.status(404).send('No such user');
-    const token = uuidv4();
-    await Token.create({ username, token, deviceId: deviceMac });
-    res.redirect('/admin');
-});
-app.post('/admin/revoke', adminAuth, async (req, res) => {
-    const { username, deviceMac } = req.body;
-    await Token.deleteOne({ username, deviceId: deviceMac });
-    res.redirect('/admin');
-});
-app.post('/admin/reset', adminAuth, async (req, res) => {
-    const { username, daysValid } = req.body;
-    if (!daysValid) return res.status(400).send('Days required');
-    await User.findOneAndUpdate({ username }, { expiresAt: calcExpiry(+daysValid) });
-    res.redirect('/admin');
-});
-
-// ++ DYNAMICKÝ MANIFEST PRO UNIKÁTNÍ IDENTITU DOPLŇKU ++
-app.get('/:token/:deviceMac/manifest.json', async (req, res) => {
+// Simplified Authentication Middleware
+const authMiddleware = async (req, res, next) => {
     const { token, deviceMac } = req.params;
 
-    // Create a unique name and ID without needing to connect to the database.
-    // This makes the manifest request extremely fast and avoids timeouts.
-    const manifest = { ...addonInterface.manifest };
-    const cleanMac = deviceMac.replace(/:/g, '');
-    
-    manifest.id = `org.stremio.czsk.${token}.${cleanMac}`;
-    manifest.name = `CZSK (${cleanMac.slice(-4)})`; // Unique name using last 4 chars of MAC
-    manifest.description = `Personalized CZSK addon for device ${deviceMac}`;
-
-    res.json(manifest);
-});
-
-// ++ MIDLLEWARE PRO ZÁZNAM A OCHRANU POUZE PRO STREAMY ++
-const streamHandler = getRouter(addonInterface);
-app.use(MOUNT_PATH, async (req, res, next) => {
-    // This middleware will now only handle non-manifest requests
-    if (req.path.endsWith('/manifest.json')) {
-        return next(); // Skip this logic for manifest requests
+    if (!token || !deviceMac || !MAC_REGEX.test(deviceMac)) {
+        return res.status(400).send('Bad request: Invalid token or MAC format');
     }
 
-    const { token, deviceMac } = req.params;
-    
-    const entry = await Token.findOne({ token, deviceId: deviceMac });
-    if (!entry) return res.status(401).end('Invalid token/device');
-
-    const user = await User.findOne({ username: entry.username });
-    if (!user || Date.now() > user.expiresAt) return res.status(403).end('Account expired or user not found');
-    
-    if (req.path.startsWith('/stream/')) {
-        try {
-            // Logging logic
-            const parts = req.path.split('/');
-            const type = parts[2];
-            const idParts = parts[3].split('.json')[0].split(':');
-            const imdbId = idParts[0];
-            let contentInfo = '';
-            if (type === 'series' && idParts.length > 2) {
-                contentInfo = `S${String(idParts[1]).padStart(2, '0')}E${String(idParts[2]).padStart(2, '0')}`;
-            }
-            const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-            const ua = req.headers['user-agent'] || '';
-
-            await Token.updateOne({ _id: entry._id }, {
-                $set: { 
-                    lastWatchedType: type, 
-                    lastWatchedImdbId: imdbId, 
-                    lastWatchedInfo: contentInfo, 
-                    lastWatchedAt: new Date(),
-                    lastIpAddress: ip,
-                    lastUserAgent: ua,
-                }
-            });
-            console.log(`Updated last-watched for user ${user.username} from IP ${ip}: ${imdbId} ${contentInfo}`);
-        } catch (err) {
-            console.error('Failed to update last-watched event:', err);
+    try {
+        const entry = await Token.findOne({ token, deviceId: deviceMac });
+        if (!entry) {
+            return res.status(401).send('Invalid token or device');
         }
+
+        const user = await User.findOne({ username: entry.username });
+        if (!user || Date.now() > user.expiresAt) {
+            return res.status(403).send('Account expired or not found');
+        }
+        
+        // If everything is okay, proceed to the Stremio router
+        next();
+
+    } catch (err) {
+        console.error("Authentication error:", err);
+        return res.status(500).send('Server error during authentication');
     }
-    
-    // Pass the request to the Stremio addon router
-    streamHandler(req, res, next);
-});
+};
+
+// Mount the authentication middleware and then the Stremio addon router
+app.use(MOUNT_PATH, authMiddleware, getRouter(addonInterface));
+
+// Admin panel and other routes are removed for this test to isolate the problem.
+// We will add them back once the core addon functionality is confirmed.
 
 module.exports = app;
-
