@@ -26,7 +26,7 @@ const connectDB = async () => {
   return conn;
 };
 
-// Schéma pro uživatele
+// --- Schemas (User, Token) ---
 const UserSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true, index: true },
   hash: { type: String, required: true },
@@ -34,7 +34,6 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
-// Schéma pro tokeny/zařízení s informací o poslední aktivitě
 const TokenSchema = new mongoose.Schema({
   username: { type: String, required: true, index: true },
   token: { type: String, required: true, unique: true },
@@ -48,6 +47,7 @@ const TokenSchema = new mongoose.Schema({
 });
 TokenSchema.index({ token: 1, deviceId: 1 });
 const Token = mongoose.models.Token || mongoose.model('Token', TokenSchema);
+
 
 // —— EXPRESS SETUP ——
 const app = express();
@@ -64,6 +64,7 @@ app.use(async (req, res, next) => {
   }
 });
 
+// --- Admin Authentication ---
 function adminAuth(req, res, next) {
   const auth = req.headers.authorization || '';
   if (!auth.startsWith('Basic ')) {
@@ -82,6 +83,7 @@ function calcExpiry(days) {
 
 // —— ADMIN DASHBOARD ——
 app.get('/admin', adminAuth, async (req, res) => {
+    // This code remains the same
     const users = await User.find().lean();
     const tokens = await Token.find().lean();
     const host = req.headers['x-forwarded-host'] || req.headers.host;
@@ -192,11 +194,16 @@ app.get('/:token/:deviceMac/manifest.json', async (req, res) => {
     res.json(manifest);
 });
 
-// —— OCHRANA, ZÁZNAM A ROUTER PRO STREAMY ——
+// ++ MIDLLEWARE PRO ZÁZNAM A OCHRANU POUZE PRO STREAMY ++
+const streamHandler = getRouter(addonInterface);
 app.use(MOUNT_PATH, async (req, res, next) => {
-    const { token, deviceMac } = req.params;
-    if (!MAC_REGEX.test(deviceMac)) return res.status(400).end('Bad MAC format');
+    // This middleware will now only handle non-manifest requests
+    if (req.path.endsWith('/manifest.json')) {
+        return next(); // Skip this logic for manifest requests
+    }
 
+    const { token, deviceMac } = req.params;
+    
     const entry = await Token.findOne({ token, deviceId: deviceMac });
     if (!entry) return res.status(401).end('Invalid token/device');
 
@@ -205,6 +212,7 @@ app.use(MOUNT_PATH, async (req, res, next) => {
     
     if (req.path.startsWith('/stream/')) {
         try {
+            // Logging logic
             const parts = req.path.split('/');
             const type = parts[2];
             const idParts = parts[3].split('.json')[0].split(':');
@@ -213,8 +221,6 @@ app.use(MOUNT_PATH, async (req, res, next) => {
             if (type === 'series' && idParts.length > 2) {
                 contentInfo = `S${String(idParts[1]).padStart(2, '0')}E${String(idParts[2]).padStart(2, '0')}`;
             }
-
-            // Získáme IP adresu a User-Agent
             const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
             const ua = req.headers['user-agent'] || '';
 
@@ -233,7 +239,9 @@ app.use(MOUNT_PATH, async (req, res, next) => {
             console.error('Failed to update last-watched event:', err);
         }
     }
-    next();
-}, getRouter(addonInterface));
+    
+    // Pass the request to the Stremio addon router
+    streamHandler(req, res, next);
+});
 
 module.exports = app;
