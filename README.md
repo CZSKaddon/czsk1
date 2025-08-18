@@ -6,7 +6,7 @@ This addon allows you to search and stream content from CZSK.to directly in Stre
 
 - Search for movies and series on CZSK.to
 - Stream content directly in Stremio (requires stremio-local-addon)
-- No login required
+- No login require
 
 ## How it works
 
