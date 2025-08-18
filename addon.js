@@ -598,5 +598,3 @@ builder.defineStreamHandler(async ({ type, id, name, episode, year }) => {
 });
 
 module.exports = builder.getInterface();
-// Přidejte tento řádek na úplný konec souboru addon.js
-module.exports.streamHandler = builder.handlers.stream[0];
