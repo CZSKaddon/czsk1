@@ -2,13 +2,11 @@
 
 const express = require('express');
 const bodyParser = require('body-parser');
-const { addonBuilder, getRouter } = require('stremio-addon-sdk');
-const addonInterface = require('./addon'); // Načteme jen základní manifest
+const { getRouter } = require('stremio-addon-sdk');
+const addonInterface = require('./addon');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
-const axios = require('axios');
-const crypto = require('crypto');
 
 // —— CONFIG ——
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
@@ -22,9 +20,13 @@ let conn = null;
 
 const connectDB = async () => {
   if (conn == null) {
-    conn = mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 5000 }).then(() => mongoose);
+    console.log('Creating new database connection...');
+    conn = mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+    }).then(() => mongoose);
     await conn;
   }
+  console.log('Database connection established.');
   return conn;
 };
 
@@ -36,12 +38,18 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
-// Schéma pro tokeny/zařízení s WST
+// Schéma pro tokeny/zařízení s informací o poslední aktivitě
 const TokenSchema = new mongoose.Schema({
   username: { type: String, required: true, index: true },
   token: { type: String, required: true, unique: true },
   deviceId: { type: String, required: true },
-  wst: { type: String }, // Webshare Token
+  userAgent: { type: String },
+  lastWatchedType: { type: String },
+  lastWatchedImdbId: { type: String },
+  lastWatchedInfo: { type: String },
+  lastWatchedAt: { type: Date },
+  lastIpAddress: { type: String },
+  lastUserAgent: { type: String },
 });
 TokenSchema.index({ token: 1, deviceId: 1 });
 const Token = mongoose.models.Token || mongoose.model('Token', TokenSchema);
@@ -60,24 +68,6 @@ app.use(async (req, res, next) => {
     res.status(500).send('Could not connect to the database.');
   }
 });
-
-// ++ HELPER FUNKCE PRO WEBSHARE ++
-async function getWst(username, password) {
-    if (!username || !password) return null;
-    try {
-        const saltResponse = await axios.get('https://webshare.cz/api/salt/', { params: { login: username } });
-        const saltMatch = saltResponse.data.match(/<salt>(.*?)<\/salt>/);
-        if (!saltMatch) throw new Error('Could not get salt from Webshare');
-        const salt = saltMatch[1];
-        const hashedPassword = crypto.createHash('sha1').update(password).digest('hex');
-        const finalHash = crypto.createHash('sha1').update(salt + hashedPassword).digest('hex');
-        return finalHash;
-    } catch (error) {
-        console.error('Error getting WST:', error.message);
-        return null;
-    }
-}
-
 
 function adminAuth(req, res, next) {
   const auth = req.headers.authorization || '';
@@ -107,21 +97,40 @@ app.get('/admin', adminAuth, async (req, res) => {
     const userTokens = tokens.filter(t => t.username === u.username);
     if (userTokens.length === 0) {
         const exp = new Date(u.expiresAt).toLocaleString();
-         rowsHtml += `<tr><td>${u.username}</td><td>${exp}</td><td colspan="3">No devices</td></tr>`;
+         rowsHtml += `<tr><td>${u.username}</td><td>${exp}</td><td colspan="7">No devices</td></tr>`;
     } else {
         userTokens.forEach(tkn => {
           const exp = new Date(u.expiresAt).toLocaleString();
           const url = `${protocol}://${host}/${tkn.token}/${tkn.deviceId}/manifest.json`;
+
+          const lastWatchedText = tkn.lastWatchedAt 
+            ? `${tkn.lastWatchedImdbId} ${tkn.lastWatchedInfo || ''}`.trim()
+            : 'N/A';
+          const lastWatchedTime = tkn.lastWatchedAt
+            ? new Date(tkn.lastWatchedAt).toLocaleString()
+            : 'N/A';
+
           rowsHtml += `
             <tr>
               <td>${u.username}</td>
               <td>${exp}</td>
               <td>${tkn.deviceId}</td>
-              <td>${tkn.wst ? 'Ano' : 'Ne'}</td>
+              <td><a href="https://www.imdb.com/title/${tkn.lastWatchedImdbId || ''}" target="_blank">${lastWatchedText}</a></td>
+              <td>${lastWatchedTime}</td>
+              <td>${tkn.lastIpAddress || 'N/A'}</td>
+              <td title="${tkn.lastUserAgent || ''}">${(tkn.lastUserAgent || 'N/A').substring(0, 20)}...</td>
               <td><a href="${url}" target="_blank">Install URL</a></td>
               <td>
-                 <form style="display:inline" method="POST" action="/admin/revoke"><input type="hidden" name="username" value="${u.username}"><input type="hidden" name="deviceMac" value="${tkn.deviceId}"><button>Revoke</button></form>
-                 <form style="display:inline" method="POST" action="/admin/reset"><input type="hidden" name="username"  value="${u.username}"><input type="number" name="daysValid" min="1" placeholder="Days" required><button>Reset</button></form>
+                 <form style="display:inline" method="POST" action="/admin/revoke">
+                   <input type="hidden" name="username" value="${u.username}">
+                   <input type="hidden" name="deviceMac" value="${tkn.deviceId}">
+                   <button>Revoke</button>
+                 </form>
+                 <form style="display:inline" method="POST" action="/admin/reset">
+                   <input type="hidden" name="username"  value="${u.username}">
+                   <input type="number" name="daysValid" min="1" placeholder="Days" required>
+                   <button>Reset</button>
+                 </form>
               </td>
             </tr>`;
         });
@@ -129,51 +138,77 @@ app.get('/admin', adminAuth, async (req, res) => {
   });
 
   const html = `
-    <!DOCTYPE html><html><head><meta charset="utf-8"><title>Admin Dashboard</title><style>body{font-family:sans-serif;max-width:1100px;margin:auto;} table{width:100%; border-collapse: collapse;} th,td{border:1px solid #ccc; padding: 8px; text-align:left;} form{margin-bottom:2em;}</style></head>
+    <!DOCTYPE html><html><head><meta charset="utf-8"><title>Admin Dashboard</title><style>body{font-family:sans-serif;max-width:1400px;margin:auto;} table{width:100%; border-collapse: collapse;} th,td{border:1px solid #ccc; padding: 8px; text-align:left;} form{margin-bottom:2em;}</style></head>
     <body>
       <h1>Admin Dashboard</h1>
-      <h2>Register New User / Add Device</h2>
-      <form method="POST" action="/admin/add">
+      <h2>Register New User</h2>
+      <form method="POST" action="/admin/register">
         <label>Username:<br><input name="username" required></label><br>
         <label>Password:<br><input type="password" name="password" required></label><br>
         <label>Device MAC:<br><input name="deviceMac" required placeholder="AA:BB:CC:DD:EE:FF"></label><br>
         <label>Days Valid:<br><input name="daysValid" type="number" min="1" required></label><br>
-        <hr>
-        <h3>Webshare Credentials (Optional)</h3>
-        <label>Webshare Username:<br><input name="wsUser"></label><br>
-        <label>Webshare Password:<br><input type="password" name="wsPass"></label><br>
-        <button>Create / Add Device</button>
+        <button>Create</button>
+      </form>
+      <h2>Add Device to Existing User</h2>
+      <form method="POST" action="/admin/add-device">
+        <label>Username:<br><select name="username">${users.map(u => `<option>${u.username}</option>`).join('')}</select></label><br>
+        <label>Device MAC:<br><input name="deviceMac" required placeholder="AA:BB:CC:DD:EE:FF"></label><br>
+        <button>Add Device</button>
       </form>
       <h2>Existing Users & Devices</h2>
-      <table><tr><th>User</th><th>Expires</th><th>Device MAC</th><th>Webshare?</th><th>Install Link</th><th>Actions</th></tr>${rowsHtml}</table>
+      <table>
+        <tr>
+            <th>User</th>
+            <th>Expires</th>
+            <th>Device MAC</th>
+            <th>Last Watched</th>
+            <th>Time</th>
+            <th>Last IP</th>
+            <th>Device Info</th>
+            <th>Install Link</th>
+            <th>Actions</th>
+        </tr>
+        ${rowsHtml}
+      </table>
     </body></html>`;
 
   res.send(html);
 });
 
 // —— ADMIN ACTIONS ——
-app.post('/admin/add', adminAuth, async (req, res) => {
-    const { username, password, daysValid, deviceMac, wsUser, wsPass } = req.body;
-    if (!username || !password || !daysValid || !deviceMac) return res.status(400).send('All fields required');
-    if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
-
-    let user = await User.findOne({ username });
-    if (!user) {
-        const hash = await bcrypt.hash(password, 10);
-        user = await User.create({ username, hash, expiresAt: calcExpiry(+daysValid) });
-    }
-
-    const wst = await getWst(wsUser, wsPass);
-    const token = uuidv4();
-    await Token.create({ username, token, deviceId: deviceMac, wst });
-
-    res.redirect('/admin');
+app.post('/admin/register', adminAuth, async (req, res) => {
+  const { username, password, daysValid, deviceMac } = req.body;
+  if (!username || !password || !daysValid || !deviceMac) return res.status(400).send('All fields required');
+  if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
+  if (await User.findOne({ username })) return res.status(409).send('User exists');
+  
+  const hash = await bcrypt.hash(password, 10);
+  await User.create({ username, hash, expiresAt: calcExpiry(+daysValid) });
+  
+  const token = uuidv4();
+  await Token.create({ username, token, deviceId: deviceMac });
+  
+  res.redirect('/admin');
 });
+
+app.post('/admin/add-device', adminAuth, async (req, res) => {
+  const { username, deviceMac } = req.body;
+  if (!username || !deviceMac) return res.status(400).send('Fields required');
+  if (!MAC_REGEX.test(deviceMac)) return res.status(400).send('Bad MAC format');
+  if (!await User.findOne({ username })) return res.status(404).send('No such user');
+  
+  const token = uuidv4();
+  await Token.create({ username, token, deviceId: deviceMac });
+
+  res.redirect('/admin');
+});
+
 app.post('/admin/revoke', adminAuth, async (req, res) => {
   const { username, deviceMac } = req.body;
   await Token.deleteOne({ username, deviceId: deviceMac });
   res.redirect('/admin');
 });
+
 app.post('/admin/reset', adminAuth, async (req, res) => {
   const { username, daysValid } = req.body;
   if (!daysValid) return res.status(400).send('Days required');
@@ -181,109 +216,68 @@ app.post('/admin/reset', adminAuth, async (req, res) => {
   res.redirect('/admin');
 });
 
+// —— PROTECT, UA‑LOCK & MOUNT ADDON ——
+app.use(MOUNT_PATH, async (req, res, next) => {
+  const { token, deviceMac } = req.params;
+  if (!MAC_REGEX.test(deviceMac)) return res.status(400).end('Bad MAC format');
 
-// ++ PŘESUNUTO Z ADDON.JS: Veškerá logika pro vyhledávání ++
-const { searchWebshare, getWebshareStreamUrl, searchHellspy, getStreamUrl, getTitleFromWikidata, getSeasonEpisodePatterns, isLikelyEpisode, searchSeriesWithPattern } = require('./addon');
+  const entry = await Token.findOne({ token, deviceId: deviceMac });
+  if (!entry) return res.status(401).end('Invalid token/device');
 
-// ++ PŘESUNUTO Z ADDON.JS: Hlavní handler pro streamy ++
-async function streamHandler(args) {
-  const { type, id, config } = args;
-  let { name, episode, year } = args;
-  const wstToken = config ? config.wstToken : null; // Zde bude WST z databáze
+  const user = await User.findOne({ username: entry.username });
+  if (!user) return res.status(401).end('User not found');
+  if (Date.now() > user.expiresAt) return res.status(403).end('Account expired');
 
-  if (id.includes(":")) {
-    const parts = id.split(":");
-    id = parts[0];
-    episode = { season: parseInt(parts[1]), number: parseInt(parts[2]) };
-  }
-  if (!name && id.startsWith("tt")) {
-    const titleInfo = await getTitleFromWikidata(id);
-    if (titleInfo) {
-      name = titleInfo.czTitle || titleInfo.enTitle || titleInfo.originalTitle;
-      year = titleInfo.year;
-      if (!type && titleInfo.type) {
-        type = titleInfo.type === "movie" ? "movie" : "series";
-      }
-    }
-  }
-  if (!name) return { streams: [] };
-
-  const simplifiedName = name.includes(":") ? name.split(":")[0].trim() : name;
-  const queries = [];
-  if (type === "series" && episode) {
-    const seasonStr = episode.season.toString().padStart(2, "0");
-    const episodeStr = episode.number.toString().padStart(2, "0");
-    queries.push(`${name} S${seasonStr}E${episodeStr}`, `${name} ${seasonStr}x${episodeStr}`, `${name} - ${episodeStr}`);
-    if (simplifiedName !== name) {
-        queries.push(`${simplifiedName} S${seasonStr}E${episodeStr}`, `${simplifiedName} ${seasonStr}x${episodeStr}`, `${simplifiedName} - ${episodeStr}`);
-    }
-  } else if (type === "movie") {
-    queries.push(name + (year ? " " + year : ""), name);
-    if (simplifiedName !== name) {
-        queries.push(simplifiedName + (year ? " " + year : ""), simplifiedName);
-    }
-  }
-
-  let allResults = [];
-  if (type === "series" && episode) {
-      allResults = await searchSeriesWithPattern(queries, episode.season, episode.number, wstToken);
-  } else {
-      const searchPromises = queries.map(q => [searchHellspy(q), searchWebshare(q, wstToken)]).flat();
-      const resultsByQuery = await Promise.all(searchPromises);
-      allResults = resultsByQuery.flat();
-  }
-  
-  if (allResults.length === 0) return { streams: [] };
-
-  const streams = [];
-  const processedResults = allResults.filter(r => type === 'movie' ? !isLikelyEpisode(r.title) : true);
-  
-  for (const result of processedResults.slice(0, 20)) {
+  if (req.path.startsWith('/stream/')) {
     try {
-        if (result.source === 'hellspy' && result.id && result.fileHash) {
-            const streamInfo = await getStreamUrl(result.id, result.fileHash);
-            if (Array.isArray(streamInfo)) {
-                streamInfo.forEach(s => {
-                    const sizeGB = result.size ? (result.size / 1024 / 1024 / 1024).toFixed(2) + " GB" : "";
-                    streams.push({ url: s.url, title: `[Hellspy ${s.quality}] ${result.title} ${sizeGB}`, name: `Hellspy\n${s.quality}` });
-                });
-            }
-        } else if (result.source === 'webshare' && result.ident) {
-            const streamUrl = await getWebshareStreamUrl(result.ident, wstToken);
-            if (streamUrl) {
-                const sizeGB = result.size ? (result.size / 1024 / 1024 / 1024).toFixed(2) + " GB" : "";
-                streams.push({ url: streamUrl, title: `[Webshare] ${result.title} ${sizeGB}`, name: `Webshare` });
-            }
+      const parts = req.path.split('/');
+      const type = parts[2];
+      const idParts = parts[3].split('.json')[0].split(':');
+      const imdbId = idParts[0];
+      let contentInfo = '';
+      if (type === 'series' && idParts.length > 2) {
+        contentInfo = `S${String(idParts[1]).padStart(2, '0')}E${String(idParts[2]).padStart(2, '0')}`;
+      }
+      
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+      const ua = req.headers['user-agent'] || '';
+
+      await Token.updateOne({ _id: entry._id }, {
+        $set: {
+          lastWatchedType: type,
+          lastWatchedImdbId: imdbId,
+          lastWatchedInfo: contentInfo,
+          lastWatchedAt: new Date(),
+          lastIpAddress: ip,
+          lastUserAgent: ua,
         }
-    } catch (error) {
-      console.error("Error processing result:", error);
+      });
+      console.log(`Updated last-watched for user ${user.username}: ${imdbId} ${contentInfo}`);
+
+    } catch (err) {
+      console.error('Failed to update last-watched event:', err);
     }
   }
-  return { streams };
-}
 
-// —— Hlavní router doplňku ——
-app.use(MOUNT_PATH, async (req, res) => {
-    const { token, deviceMac } = req.params;
-    if (!MAC_REGEX.test(deviceMac)) return res.status(400).end('Bad MAC format');
+  if (req.path.endsWith('/manifest.json')) {
+    return next();
+  }
 
-    const entry = await Token.findOne({ token, deviceId: deviceMac });
-    if (!entry) return res.status(401).end('Invalid token/device');
-
-    const user = await User.findOne({ username: entry.username });
-    if (!user || Date.now() > user.expiresAt) return res.status(403).end('Account expired or user not found');
-    
-    const manifest = { ...addonInterface.manifest };
-    const router = getRouter({ ...addonInterface, manifest });
-
-    if (req.path.startsWith('/stream/')) {
-        // Předáme WST do handleru přes config
-        req.body.config = { wstToken: entry.wst };
+  if (req.method === 'GET' && req.path.match(/\/stream\//)) {
+    const ua = req.headers['user-agent'] || '';
+    if (!entry.userAgent) {
+      await Token.updateOne({ _id: entry._id }, { userAgent: ua });
+    } else if (entry.userAgent !== ua) {
+      return res.json({ streams: [{
+        name: "🔒 Error",
+        title: 'This account is already in use on another device.',
+        url: 'https://via.placeholder.com/1280x720/000000/FFFFFF?text=Error:%20Device%20lock'
+      }]});
     }
+  }
 
-    router(req, res, () => {
-        res.status(404).send('Not Found');
-    });
+  next();
 });
+app.use(MOUNT_PATH, getRouter(addonInterface));
 
 module.exports = app;
